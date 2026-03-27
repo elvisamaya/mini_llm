@@ -34,13 +34,20 @@ class DataModule:
         return x, y
 
 
-class BigramLanguageModel(nn.Module):
-    def __init__(self, vocab_size: int):
+class MiniLLM(nn.Module):
+    def __init__(self, vocab_size: int, block_size: int, n_embd: int):
         super().__init__()
-        self.token_embedding_table = nn.Embedding(vocab_size, vocab_size)
+        self.block_size = block_size
+        self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
+        self.position_embedding_table = nn.Embedding(block_size, n_embd)
+        self.lm_head = nn.Linear(n_embd, vocab_size)
 
     def forward(self, idx: torch.Tensor, targets: torch.Tensor | None = None):
-        logits = self.token_embedding_table(idx)
+        b, t = idx.shape
+        tok_emb = self.token_embedding_table(idx)
+        pos_emb = self.position_embedding_table(torch.arange(t))
+        x = tok_emb + pos_emb
+        logits = self.lm_head(x)
 
         loss = None
         if targets is not None:
@@ -54,7 +61,8 @@ class BigramLanguageModel(nn.Module):
     @torch.no_grad()
     def generate(self, idx: torch.Tensor, max_new_tokens: int):
         for _ in range(max_new_tokens):
-            logits, _ = self(idx)
+            idx_cond = idx[:, -self.block_size :]
+            logits, _ = self(idx_cond)
             logits = logits[:, -1, :]
             probs = F.softmax(logits, dim=-1)
             idx_next = torch.multinomial(probs, num_samples=1)
@@ -65,13 +73,14 @@ class BigramLanguageModel(nn.Module):
 def main():
     text = Path("data.txt").read_text(encoding="utf-8")
     data_module = DataModule(text)
-    model = BigramLanguageModel(data_module.tokenizer.vocab_size)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-2)
-
-    block_size = 8
+    block_size = 32
     batch_size = 32
-    max_iters = 1000
+    n_embd = 64
+    max_iters = 1200
+
+    model = MiniLLM(data_module.tokenizer.vocab_size, block_size, n_embd)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 
     for step in range(max_iters):
         xb, yb = data_module.get_batch("train", block_size, batch_size)
